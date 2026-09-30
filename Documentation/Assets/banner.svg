@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+<title id="title">weft — The terminal, untangled.</title><desc id="desc">Raw input. Typed events. Deliberate control. An amber terminal illustration on near-black.</desc>
+<defs><pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#22231d" stroke-width=".5"/></pattern></defs>
+<rect width="1200" height="440" rx="12" fill="#10110f"/><rect width="1200" height="440" rx="12" fill="url(#grid)"/>
+<g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+<text x="54" y="55" fill="#a88a61" font-size="12" letter-spacing="3">STANDRZE / TERMINAL TOOLS</text>
+<text x="49" y="190" fill="#ffbd66" font-size="112" font-weight="600" letter-spacing="-6">weft</text>
+<text x="54" y="244" fill="#f2ddbc" font-size="23">The terminal, untangled.</text>
+<text x="54" y="283" fill="#a89982" font-size="15">Raw input. Typed events. Deliberate control.</text>
+<path d="M700 91H770L830 221H1118" fill="none" stroke="#ffbd66" stroke-width="2"/><circle cx="700" cy="91" r="4" fill="#ffbd66"/><path d="M700 137H782L842 221H1118" fill="none" stroke="#705233" stroke-width="2"/><circle cx="700" cy="137" r="4" fill="#ffbd66"/><path d="M700 183H794L854 221H1118" fill="none" stroke="#ffbd66" stroke-width="2"/><circle cx="700" cy="183" r="4" fill="#ffbd66"/><path d="M700 229H806L866 221H1118" fill="none" stroke="#705233" stroke-width="2"/><circle cx="700" cy="229" r="4" fill="#ffbd66"/><path d="M700 275H818L878 221H1118" fill="none" stroke="#ffbd66" stroke-width="2"/><circle cx="700" cy="275" r="4" fill="#ffbd66"/><path d="M700 321H830L890 221H1118" fill="none" stroke="#705233" stroke-width="2"/><circle cx="700" cy="321" r="4" fill="#ffbd66"/><rect x="858" y="177" width="159" height="88" rx="6" fill="#10110f" stroke="#ffbd66"/><text x="883" y="215" fill="#ffbd66" font-size="18">InputEvent</text><text x="884" y="241" fill="#9e8b70" font-size="12">bytes → meaning</text>
+<path d="M54 358H1146" stroke="#493b29"/>
+<text x="54" y="395" fill="#c59a63" font-size="12" letter-spacing="2">SWIFT NATIVE / SWIFTPM / APACHE-2.0</text>
+<text x="1005" y="395" fill="#c59a63" font-size="12">weft / 0.1</text>
+</g></svg>
