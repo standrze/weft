@@ -14,8 +14,17 @@ import Testing
     let tmux = TerminalCapabilities.inferred(environment: [
         "TERM": "screen-256color", "TERM_PROGRAM": "ghostty", "TMUX": "fixture",
     ])
-    #expect(tmux.colorDepth == .ansi256)
+    #expect(tmux.colorDepth == .trueColor)
     #expect(!tmux.synchronizedOutput && !tmux.hyperlinks && !tmux.kittyKeyboard)
+
+    let unknownTmux = TerminalCapabilities.inferred(environment: ["TERM": "screen-256color", "TMUX": "fixture"])
+    #expect(unknownTmux.colorDepth == .ansi256)
+
+    let editorTmux = TerminalCapabilities.inferred(environment: [
+        "TERM": "screen-256color", "TERM_PROGRAM": "vscode", "TMUX": "fixture",
+    ])
+    #expect(editorTmux.colorDepth == .trueColor)
+    #expect(!editorTmux.synchronizedOutput && !editorTmux.hyperlinks)
 
     let noColor = TerminalCapabilities.inferred(environment: ["TERM": "xterm-256color", "NO_COLOR": "1"])
     #expect(noColor.colorDepth == .monochrome)

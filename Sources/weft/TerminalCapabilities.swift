@@ -40,10 +40,13 @@ public struct TerminalCapabilities: Equatable, Sendable {
         let modern =
             environment["KITTY_WINDOW_ID"] != nil || environment["WEZTERM_EXECUTABLE"] != nil
             || ["ghostty", "iterm.app", "wezterm", "kitty"].contains(program)
+        let knownTrueColor =
+            modern || environment["WT_SESSION"] != nil
+            || ["alacritty", "rio", "warpterminal", "vscode", "foot"].contains(program)
         let colorDepth: TerminalColorDepth
         if environment["NO_COLOR"] != nil || term == "dumb" || term.isEmpty {
             colorDepth = .monochrome
-        } else if colorTerm == "truecolor" || colorTerm == "24bit" || (modern && !multiplexed) {
+        } else if colorTerm == "truecolor" || colorTerm == "24bit" || knownTrueColor {
             colorDepth = .trueColor
         } else if term.contains("256color") {
             colorDepth = .ansi256
