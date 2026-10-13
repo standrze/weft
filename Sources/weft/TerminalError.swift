@@ -7,4 +7,5 @@ public enum TerminalError: Error, Equatable {
     case configurationFailed(operation: String, code: Int32)
     case inputClosed
     case outputFailed
+    case cursorPositionQueryAlreadyPending
 }

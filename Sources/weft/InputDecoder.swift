@@ -6,6 +6,12 @@ import Foundation
 /// multiple calls to `feed(_:)`.
 public struct InputDecoder {
     private var pendingBytes: [UInt8] = []
+    private var cursorPositionReports: [Point] = []
+
+    internal mutating func takeCursorPositionReports() -> [Point] {
+        defer { cursorPositionReports.removeAll(keepingCapacity: true) }
+        return cursorPositionReports
+    }
     private var pasteBytes: [UInt8]?
     private let pasteLimit = 1_048_576
     private var controlString: DiscardedControlString?
@@ -103,6 +109,17 @@ public struct InputDecoder {
 
                     if code == "200~" {
                         pasteBytes = []
+                        continue
+                    }
+                    if code.last == "R" {
+                        let values = code.dropLast().split(separator: ";", omittingEmptySubsequences: false)
+                        if values.count == 2,
+                            values.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } }),
+                            let row = Int(values[0]), let column = Int(values[1]), row > 0, column > 0
+                        {
+                            // Keep storage bounded when a decoder is used without a session.
+                            cursorPositionReports = [Point(x: column - 1, y: row - 1)]
+                        }
                         continue
                     }
                     if let event = decodeControlSequence(code) {

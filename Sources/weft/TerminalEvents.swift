@@ -19,6 +19,7 @@ public final class TerminalEvents {
     private let continuation: AsyncThrowingStream<[InputEvent], Error>.Continuation
     private var sources: TerminalEventSources?
     private var escapeTimeout: Task<Void, Never>?
+    private var queryTimeout: Task<Void, Never>?
     private var stopped = false
 
     public init(session: TerminalSession) {
@@ -38,11 +39,15 @@ public final class TerminalEvents {
         continuation.onTermination = { [weak self] _ in
             Task { @MainActor in self?.stop() }
         }
+        session.queryStateChanged = { [weak self] in
+            MainActor.assumeIsolated { self?.queryStateChanged() }
+        }
         receiveAvailableEvents()
     }
 
     deinit {
         escapeTimeout?.cancel()
+        queryTimeout?.cancel()
         continuation.finish()
     }
 
@@ -56,7 +61,26 @@ public final class TerminalEvents {
         sources = nil
         escapeTimeout?.cancel()
         escapeTimeout = nil
+        queryTimeout?.cancel()
+        queryTimeout = nil
+        session.queryStateChanged = nil
         continuation.finish()
+    }
+
+    private func queryStateChanged() {
+        guard !stopped else { return }
+        let completions = session.takeQueryEvents()
+        if !completions.isEmpty { continuation.yield(completions) }
+        queryTimeout?.cancel()
+        queryTimeout = nil
+        if let delay = session.cursorQueryDelay {
+            queryTimeout = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch { return }
+                self?.receiveAvailableEvents()
+            }
+        }
     }
 
     private func receiveSignal(_ number: Int32) {
@@ -75,6 +99,7 @@ public final class TerminalEvents {
         do {
             let batch = try session.poll(timeoutMilliseconds: 0)
             if !batch.isEmpty { continuation.yield(batch) }
+            queryStateChanged()
             escapeTimeout?.cancel()
             escapeTimeout = nil
             if session.hasPendingEscape {

@@ -7,6 +7,7 @@ public enum InputEvent: Equatable, Sendable {
     case mouse(MouseEvent)
     case resize(Int, Int)
     case signal(Int)
+    case cursorPositionQuery(CursorPositionQueryResult)
 }
 
 public extension InputEvent {

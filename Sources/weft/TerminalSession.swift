@@ -17,7 +17,15 @@ public final class TerminalSession {
     private var active = false
     private var decoder = InputDecoder()
     private var lastSize: Rect
-    private var lastInputTime = ProcessInfo.processInfo.systemUptime
+    private var lastInputTime: TimeInterval
+    private let clock: () -> TimeInterval
+    private var cursorQuery: (id: UUID, deadline: TimeInterval)?
+    private var queryEvents: [InputEvent] = []
+    internal var queryStateChanged: (() -> Void)?
+
+    internal var cursorQueryDelay: TimeInterval? {
+        cursorQuery.map { max(0, $0.deadline - clock()) }
+    }
 
     /// Opens raw input without changing screens or clearing history by default.
     ///
@@ -27,9 +35,14 @@ public final class TerminalSession {
         try self.init(options: options, driver: SystemTerminalSessionDriver())
     }
 
-    internal init(options: TerminalOptions, driver: any TerminalSessionDriver) throws {
+    internal init(
+        options: TerminalOptions, driver: any TerminalSessionDriver,
+        clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) throws {
         self.options = options
         self.driver = driver
+        self.clock = clock
+        lastInputTime = clock()
         mouseEnabled = options.mouseCapture
         lastSize = driver.size
         try driver.begin(rawMode: options.rawMode)
@@ -64,6 +77,7 @@ public final class TerminalSession {
     /// irreversible. Forced termination such as SIGKILL cannot perform cleanup.
     public func close() {
         guard active else { return }
+        if let query = cursorQuery { _ = cancelCursorPositionQuery(id: query.id) }
         active = false
         try? driver.write(
             Data(options.leaveSequence(mouseEnabled: mouseEnabled, reportMotion: mouseMotionEnabled).utf8))
@@ -109,6 +123,36 @@ public final class TerminalSession {
         try driver.write(Data("\u{1b}]52;c;\(encodedText)\u{7}".utf8))
     }
 
+    /// Sends one bounded cursor-position query through the session's existing reader.
+    ///
+    /// Consume its completion through `poll` or `TerminalEvents`. Timeout is clamped
+    /// to 1...60,000 ms. Reports carry no protocol token: late replies cannot be
+    /// distinguished from replies to a later query. Treat positions as advisory.
+    public func requestCursorPosition(timeoutMilliseconds: Int = 1000) throws -> UUID {
+        guard active else { throw TerminalError.sessionClosed }
+        guard cursorQuery == nil else { throw TerminalError.cursorPositionQueryAlreadyPending }
+        let id = UUID()
+        try driver.write(Data("\u{1b}[6n".utf8))
+        cursorQuery = (id, clock() + Double(min(60_000, max(1, timeoutMilliseconds))) / 1000)
+        queryStateChanged?()
+        return id
+    }
+
+    /// Cancels a matching pending query and delivers exactly one cancellation completion.
+    @discardableResult
+    public func cancelCursorPositionQuery(id: UUID) -> Bool {
+        guard cursorQuery?.id == id else { return false }
+        cursorQuery = nil
+        queryEvents.append(.cursorPositionQuery(CursorPositionQueryResult(id: id, outcome: .cancelled)))
+        queryStateChanged?()
+        return true
+    }
+
+    internal func takeQueryEvents() -> [InputEvent] {
+        defer { queryEvents.removeAll(keepingCapacity: true) }
+        return queryEvents
+    }
+
     /// Waits for input and reports terminal resize and termination signals.
     ///
     /// Zero polls without blocking; -1 waits indefinitely. Call again after 35 ms
@@ -124,7 +168,12 @@ public final class TerminalSession {
         // Check size after draining notifications. A resize already waiting must
         // be returned now rather than consumed before an indefinite input wait.
         let resizedBeforeRead = driver.size != lastSize
-        let timeout = resizedBeforeRead ? 0 : Int32(clamping: max(-1, timeoutMilliseconds))
+        var boundedTimeout = max(-1, timeoutMilliseconds)
+        if let delay = cursorQueryDelay {
+            let deadlineTimeout = Int((delay * 1000).rounded(.up))
+            boundedTimeout = boundedTimeout < 0 ? deadlineTimeout : min(boundedTimeout, deadlineTimeout)
+        }
+        let timeout = resizedBeforeRead || !queryEvents.isEmpty ? 0 : Int32(clamping: boundedTimeout)
         let count = driver.read(&bytes, timeoutMilliseconds: timeout)
         if driver.signalNumber != 0 {
             return [.signal(Int(driver.signalNumber))]
@@ -132,7 +181,7 @@ public final class TerminalSession {
         guard count >= 0 else { throw TerminalError.inputClosed }
 
         var events: [InputEvent] = []
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = clock()
         if count > 0 {
             events = decoder.feed(Array(bytes.prefix(count)))
             lastInputTime = now
@@ -140,6 +189,22 @@ public final class TerminalSession {
             events += decoder.flushEscape()
         }
 
+        let reports = decoder.takeCursorPositionReports()
+        if let query = cursorQuery {
+            let outcome: CursorPositionQueryResult.Outcome?
+            if now >= query.deadline {
+                outcome = .timedOut
+            } else if let position = reports.first {
+                outcome = .position(position)
+            } else {
+                outcome = nil
+            }
+            if let outcome {
+                cursorQuery = nil
+                queryEvents.append(.cursorPositionQuery(CursorPositionQueryResult(id: query.id, outcome: outcome)))
+            }
+        }
+        events += takeQueryEvents()
         let size = driver.size
         if size != lastSize {
             lastSize = size

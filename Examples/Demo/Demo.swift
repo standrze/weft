@@ -12,6 +12,10 @@ struct Demo {
         var output = ANSIBackend()
         try output.write(Data("weft / the terminal, untangled.\r\nPress keys. Escape or Ctrl-C exits.\r\n".utf8))
 
+        if CommandLine.arguments.contains("--cursor-query") {
+            _ = try session.requestCursorPosition(timeoutMilliseconds: 500)
+        }
+
         for try await batch in input.events {
             for event in batch {
                 if let key = event.keyboardEvent?.key, [.escape, .interrupt, .endOfInput].contains(key) {

@@ -192,3 +192,79 @@ private final class SessionDriver: TerminalSessionDriver {
     #expect(session.mouseEnabled && session.mouseMotionEnabled)
     #expect(driver.writes.last?.contains("\u{1b}[?1003h") == true)
 }
+
+@Test func cursorQueryCompletesAcrossFragmentsWithoutConsumingKeysOrResize() throws {
+    let driver = SessionDriver()
+    let session = try TerminalSession(options: TerminalOptions(), driver: driver)
+    defer { session.close() }
+    let id = try session.requestCursorPosition()
+    #expect(driver.writes.last == "\u{1b}[6n")
+    driver.pendingBytes = Array("x\u{1b}[12;".utf8)
+    #expect(try session.poll(timeoutMilliseconds: 0) == [.text("x")])
+    driver.size = Rect(width: 90, height: 30)
+    driver.pendingBytes = Array("34Ry\u{1b}OR\u{1b}[13;2:3~".utf8)
+    let events = try session.poll(timeoutMilliseconds: 0)
+    #expect(events.first == .text("y"))
+    #expect(events.contains(.key(.function(3))))
+    #expect(events.contains(.keyEvent(KeyEvent(key: .function(3), modifiers: .shift, kind: .release))))
+    #expect(
+        events.contains(
+            .cursorPositionQuery(CursorPositionQueryResult(id: id, outcome: .position(Point(x: 33, y: 11))))))
+    #expect(events.last == .resize(90, 30))
+    #expect(session.cursorQueryDelay == nil)
+}
+
+@Test func cursorQueryBoundsWaitAndTimesOutUsingMonotonicClock() throws {
+    let driver = SessionDriver()
+    var now = 10.0
+    let session = try TerminalSession(options: TerminalOptions(), driver: driver, clock: { now })
+    defer { session.close() }
+    let id = try session.requestCursorPosition(timeoutMilliseconds: 250)
+    #expect(throws: TerminalError.cursorPositionQueryAlreadyPending) { try session.requestCursorPosition() }
+    #expect(try session.poll(timeoutMilliseconds: -1).isEmpty)
+    #expect(driver.lastTimeout == 250)
+    now = 10.25
+    #expect(
+        try session.poll(timeoutMilliseconds: -1) == [
+            .cursorPositionQuery(CursorPositionQueryResult(id: id, outcome: .timedOut))
+        ])
+    #expect(driver.lastTimeout == 0)
+    driver.pendingBytes = Array("\u{1b}[3;4Rz".utf8)
+    #expect(try session.poll(timeoutMilliseconds: 0) == [.text("z")])
+}
+
+@Test func failedCursorQueryWriteLeavesNoPendingRequestAndCancellationIsExactlyOnce() throws {
+    let driver = SessionDriver()
+    let session = try TerminalSession(options: TerminalOptions(), driver: driver)
+    driver.failedWrites = [2]
+    #expect(throws: TerminalError.outputFailed) { try session.requestCursorPosition() }
+    #expect(session.cursorQueryDelay == nil)
+    let id = try session.requestCursorPosition()
+    #expect(!session.cancelCursorPositionQuery(id: UUID()))
+    #expect(session.cancelCursorPositionQuery(id: id))
+    #expect(!session.cancelCursorPositionQuery(id: id))
+    #expect(
+        try session.poll(timeoutMilliseconds: 0) == [
+            .cursorPositionQuery(CursorPositionQueryResult(id: id, outcome: .cancelled))
+        ])
+    #expect(try session.poll(timeoutMilliseconds: 0).isEmpty)
+    let closingID = try session.requestCursorPosition()
+    session.close()
+    #expect(
+        session.takeQueryEvents() == [
+            .cursorPositionQuery(CursorPositionQueryResult(id: closingID, outcome: .cancelled))
+        ])
+    #expect(throws: TerminalError.sessionClosed) { try session.requestCursorPosition() }
+}
+
+@Test func cursorReportsAreStrictPositiveDecimalAndDoNotAliasFunctionKeys() throws {
+    let driver = SessionDriver()
+    let session = try TerminalSession(options: TerminalOptions(), driver: driver)
+    defer { session.close() }
+    driver.pendingBytes = Array("\u{1b}[1;2R".utf8)
+    #expect(try session.poll(timeoutMilliseconds: 0).isEmpty)
+    let id = try session.requestCursorPosition()
+    driver.pendingBytes = Array("\u{1b}[0;2R\u{1b}[1;-2R\u{1b}[1;2:3R\u{1b}[99999999999999999999999;2R\u{1b}[13~".utf8)
+    #expect(try session.poll(timeoutMilliseconds: 0) == [.key(.function(3))])
+    #expect(session.cancelCursorPositionQuery(id: id))
+}
