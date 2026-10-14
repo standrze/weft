@@ -8,6 +8,8 @@ scripts/check-format.sh
 swift test
 swift build --product weft-demo
 python3 scripts/smoke.py .build/debug/weft-demo
+python3 scripts/smoke-features.py .build/debug/weft-demo
+python3 scripts/smoke-job-control.py .build/debug/weft-demo
 ```
 
 Keep `weft` lowercase. Use four-space indentation, a 120-column target,

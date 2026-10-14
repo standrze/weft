@@ -26,7 +26,7 @@ internal enum Reed {
         nonisolated(unsafe) private static var signalWriteDescriptor: Int32 = -1
     #endif
     private static let ownershipLock = NSLock()
-    private static let handledSignals: [Int32] = [SIGINT, SIGTERM, SIGHUP, SIGPIPE, SIGWINCH]
+    static let handledSignals: [Int32] = [SIGINT, SIGTERM, SIGHUP, SIGPIPE, SIGWINCH, SIGTSTP]
     nonisolated(unsafe) private static var originalSettings = termios()
     nonisolated(unsafe) private static var previousActions: [sigaction] = []
     nonisolated(unsafe) private static var active = false
@@ -114,6 +114,23 @@ internal enum Reed {
         guard active else { return }
         restoreSettings()
         active = false
+    }
+
+    static func stopForShell() throws {
+        // Dispatch workers can block job-control signals. Temporarily unblock
+        // SIGTSTP here so raise stops before terminal ownership is reacquired.
+        var signals = sigset_t()
+        var previous = sigset_t()
+        sigemptyset(&signals)
+        sigaddset(&signals, SIGTSTP)
+        let code = pthread_sigmask(SIG_UNBLOCK, &signals, &previous)
+        guard code == 0 else {
+            throw TerminalError.configurationFailed(operation: "pthread_sigmask", code: code)
+        }
+        defer { _ = pthread_sigmask(SIG_SETMASK, &previous, nil) }
+        guard raise(SIGTSTP) == 0 else {
+            throw TerminalError.configurationFailed(operation: "raise SIGTSTP", code: errno)
+        }
     }
 
     private static func restoreSettings() {

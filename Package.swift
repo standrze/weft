@@ -13,7 +13,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-system", from: "1.8.0")
     ],
     targets: [
-        .target(name: "weft", dependencies: [.product(name: "SystemPackage", package: "swift-system")]),
+        .target(name: "CWeft"),
+        .target(name: "weft", dependencies: ["CWeft", .product(name: "SystemPackage", package: "swift-system")]),
         .executableTarget(name: "weftDemo", dependencies: ["weft"], path: "Examples/Demo"),
         .testTarget(name: "weftTests", dependencies: ["weft"]),
     ]

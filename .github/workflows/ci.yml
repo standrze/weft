@@ -1,0 +1,30 @@
+name: Linux validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: swift:6.4-trixie
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PTY smoke dependencies
+        run: apt-get update && apt-get install -y --no-install-recommends python3
+      - name: Check formatting
+        run: scripts/check-format.sh
+      - name: Test
+        run: swift test
+      - name: Build demo
+        run: swift build --product weft-demo
+      - name: PTY smoke
+        run: |
+          python3 scripts/smoke.py .build/debug/weft-demo
+          python3 scripts/smoke.py .build/debug/weft-demo 150
+          python3 scripts/smoke-features.py .build/debug/weft-demo
+          python3 scripts/smoke-job-control.py .build/debug/weft-demo

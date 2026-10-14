@@ -8,7 +8,7 @@ public enum TerminalColorDepth: String, Equatable, Sendable {
     case trueColor
 }
 
-/// A conservative, environment-inferred terminal profile.
+/// A conservative terminal profile, initially inferred from the environment.
 ///
 /// Environment variables are hints rather than proof, especially across SSH or
 /// tmux. Applications can override individual choices after a successful probe
@@ -18,17 +18,35 @@ public struct TerminalCapabilities: Equatable, Sendable {
     public var synchronizedOutput: Bool
     public var hyperlinks: Bool
     public var kittyKeyboard: Bool
+    public var colorSchemeReporting: Bool
 
     public init(
         colorDepth: TerminalColorDepth = .ansi16,
         synchronizedOutput: Bool = false,
         hyperlinks: Bool = false,
-        kittyKeyboard: Bool = false
+        kittyKeyboard: Bool = false,
+        colorSchemeReporting: Bool = false
     ) {
         self.colorDepth = colorDepth
         self.synchronizedOutput = synchronizedOutput
         self.hyperlinks = hyperlinks
         self.kittyKeyboard = kittyKeyboard
+        self.colorSchemeReporting = colorSchemeReporting
+    }
+
+    /// Updates only features confirmed by a report.
+    ///
+    /// Timeouts should leave this profile unchanged.
+    public mutating func apply(_ reply: TerminalReply) {
+        switch reply {
+        case .kittyKeyboard: kittyKeyboard = true
+        case .kittyKeyboardUnsupported: kittyKeyboard = false
+        case let .privateMode(number, state):
+            let available = state != .unrecognized && state != .permanentlyReset
+            if number == 2026 { synchronizedOutput = available }
+            if number == 2031 { colorSchemeReporting = available }
+        default: break
+        }
     }
 
     /// Infers a safe output profile from the process environment.

@@ -31,7 +31,21 @@ public struct TerminalOptions: Equatable, Sendable {
     public var cursorStyle: TerminalCursorStyle?
     public var mouseCapture: Bool
     public var bracketedPaste: Bool
+    /// Request terminal focus reports (DEC private mode 1004).
+    ///
+    /// Disabled by default.
+    public var focusReporting: Bool
+    /// Opt into Contour color-scheme change notifications (DEC private mode 2031).
+    public var colorSchemeReporting: Bool
     public var keyboardProtocol: TerminalKeyboardProtocol
+    /// Maximum UTF-8 bytes retained in a bracketed paste; defaults to 1 MiB.
+    public var maximumPasteBytes: Int
+    /// Idle milliseconds before a lone legacy Escape becomes a key; defaults to 35.
+    ///
+    /// Shared by polling and asynchronous events. Zero resolves Escape immediately;
+    /// use a longer delay for fragmented input over remote links. Values are clamped
+    /// to 0...Int32.max when used. Raw-byte input is unaffected.
+    public var escapeTimeoutMilliseconds: Int
 
     public init(
         rawMode: Bool = true,
@@ -42,7 +56,11 @@ public struct TerminalOptions: Equatable, Sendable {
         cursorStyle: TerminalCursorStyle? = nil,
         mouseCapture: Bool = false,
         bracketedPaste: Bool = true,
-        keyboardProtocol: TerminalKeyboardProtocol = .legacy
+        focusReporting: Bool = false,
+        colorSchemeReporting: Bool = false,
+        keyboardProtocol: TerminalKeyboardProtocol = .legacy,
+        maximumPasteBytes: Int = 1_048_576,
+        escapeTimeoutMilliseconds: Int = 35
     ) {
         self.rawMode = rawMode
         self.alternateScreen = alternateScreen
@@ -52,7 +70,11 @@ public struct TerminalOptions: Equatable, Sendable {
         self.cursorStyle = cursorStyle
         self.mouseCapture = mouseCapture
         self.bracketedPaste = bracketedPaste
+        self.focusReporting = focusReporting
+        self.colorSchemeReporting = colorSchemeReporting
         self.keyboardProtocol = keyboardProtocol
+        self.maximumPasteBytes = max(0, maximumPasteBytes)
+        self.escapeTimeoutMilliseconds = max(0, min(Int(Int32.max), escapeTimeoutMilliseconds))
     }
 
     internal var enterSequence: String {
@@ -68,14 +90,21 @@ public struct TerminalOptions: Equatable, Sendable {
         if let cursorStyle { sequence += "\u{1b}[\(cursorStyle.rawValue) q" }
         if mouseCapture { sequence += Self.mouseSequence(enabled: true) }
         if bracketedPaste { sequence += "\u{1b}[?2004h" }
+        if focusReporting { sequence += "\u{1b}[?1004h" }
+        if colorSchemeReporting { sequence += "\u{1b}[?2031h" }
         if keyboardProtocol == .kitty { sequence += "\u{1b}[>31u" }
         return sequence
     }
 
     internal func leaveSequence(mouseEnabled: Bool, reportMotion: Bool = false) -> String {
+        // An input-only relay owns no ANSI modes or style. Preserve the child's
+        // balanced output and any enclosing terminal context on close.
+        if enterSequence.isEmpty && !mouseEnabled && !reportMotion { return "" }
         var sequence = "\u{1b}[?2026l\u{1b}[0m"
         // Keyboard stacks belong to the current screen: pop before switching back.
         if keyboardProtocol == .kitty { sequence += "\u{1b}[<u" }
+        if focusReporting { sequence += "\u{1b}[?1004l" }
+        if colorSchemeReporting { sequence += "\u{1b}[?2031l" }
         if bracketedPaste { sequence += "\u{1b}[?2004l" }
         if reportMotion { sequence += "\u{1b}[?1003l" }
         if mouseEnabled { sequence += Self.mouseSequence(enabled: false) }

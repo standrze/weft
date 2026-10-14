@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Darwin)
+    import Darwin
+#else
+    import Glibc
+#endif
+
 /// The terminal boundary used by a session; a fake driver exercises failure cleanup.
 internal protocol TerminalSessionDriver {
     func begin(rawMode: Bool) throws
@@ -9,11 +15,13 @@ internal protocol TerminalSessionDriver {
     var size: Rect { get }
     var signalNumber: Int32 { get }
     var signalNotificationDescriptor: Int32 { get }
+    var inputDescriptor: Int32 { get }
     func drainSignalNotifications()
 }
 
 extension TerminalSessionDriver {
     var signalNotificationDescriptor: Int32 { -1 }
+    var inputDescriptor: Int32 { STDIN_FILENO }
     func drainSignalNotifications() {}
 }
 

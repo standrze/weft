@@ -21,6 +21,8 @@ public enum Key: Equatable, Sendable {
     case end
     case pageUp
     case pageDown
+    /// The keypad center key when it does not produce a digit.
+    case begin
     case first
     case last
     case f2

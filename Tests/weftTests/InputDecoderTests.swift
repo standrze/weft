@@ -205,3 +205,96 @@ import Testing
         decoder.feed(Array("\u{1b}[<32;3;4M".utf8)) == [.mouse(MouseEvent(kind: .drag, position: Point(x: 2, y: 3)))])
     #expect(decoder.feed(Array("\u{1b}[<0;3;4m".utf8)) == [.mouse(MouseEvent(kind: .up, position: Point(x: 2, y: 3)))])
 }
+
+@Test func focusReportsRemainDistinctFromTextAndPasteAcrossEveryFragmentBoundary() {
+    let sequence = Array("\u{1b}[I\u{1b}[Ox".utf8)
+    for split in 0...sequence.count {
+        var decoder = InputDecoder()
+        let first = decoder.feed(Array(sequence.prefix(split)))
+        let second = decoder.feed(Array(sequence.dropFirst(split)))
+        #expect(first + second == [.focusChanged(true), .focusChanged(false), .text("x")])
+    }
+    var decoder = InputDecoder()
+    #expect(decoder.feed(Array("\u{1b}[1I\u{1b}[?O".utf8)).isEmpty)
+    #expect(decoder.feed(Array("\u{1b}[200~\u{1b}[I\u{1b}[O\u{1b}[201~".utf8)) == [.paste("\u{1b}[I\u{1b}[O")])
+}
+
+@Test func configuredPasteBudgetPreservesLargeFramesAndFollowingKeys() {
+    let text = String(repeating: "a", count: 1_500_000)
+    let wire = Array(("\u{1b}[200~" + text + "\u{1b}[201~\r").utf8)
+    var defaultDecoder = InputDecoder()
+    var configuredDecoder = InputDecoder(maximumPasteBytes: 2_000_000)
+    var defaultEvents: [InputEvent] = []
+    var configuredEvents: [InputEvent] = []
+    for start in stride(from: 0, to: wire.count, by: 8191) {
+        let packet = Array(wire[start..<min(start + 8191, wire.count)])
+        defaultEvents += defaultDecoder.feed(packet)
+        configuredEvents += configuredDecoder.feed(packet)
+    }
+    #expect(defaultEvents == [.pasteTruncated(String(text.prefix(1_048_576))), .key(.enter)])
+    #expect(configuredEvents == [.paste(text), .key(.enter)])
+    var zeroDecoder = InputDecoder(maximumPasteBytes: -1)
+    #expect(zeroDecoder.feed(Array("\u{1b}[200~ignored\u{1b}[201~x".utf8)) == [.pasteTruncated(""), .text("x")])
+}
+
+@Test func truncatedPasteKeepsCompleteUTF8AndResetsAcrossFragmentedFrames() {
+    let source = Array("\u{1b}[200~a中🙂\u{1b}[201~x\u{1b}[200~中\u{1b}[201~".utf8)
+    for limit in 0...8 {
+        let prefix = limit < 1 ? "" : limit < 4 ? "a" : limit < 8 ? "a中" : "a中🙂"
+        let first: InputEvent = limit < 8 ? .pasteTruncated(prefix) : .paste(prefix)
+        let second: InputEvent = limit < 3 ? .pasteTruncated("") : .paste("中")
+        for split in 0...source.count {
+            var decoder = InputDecoder(maximumPasteBytes: limit)
+            let events = decoder.feed(Array(source.prefix(split))) + decoder.feed(Array(source.dropFirst(split)))
+            #expect(events == [first, .text("x"), second])
+        }
+    }
+    var zero = InputDecoder(maximumPasteBytes: 0)
+    #expect(zero.feed(Array("\u{1b}[200~\u{1b}[201~".utf8)) == [.paste("")])
+}
+
+@Test func kittyKeypadInputPreservesTextModifiersPhasesAndAlternateKeys() {
+    var decoder = InputDecoder()
+    for digit in 0...9 {
+        #expect(decoder.feed(Array("\u{1b}[\(57399 + digit)u".utf8)) == [.text(String(digit))])
+    }
+    let operators = [".", "/", "*", "-", "+"]
+    for (index, text) in operators.enumerated() {
+        #expect(decoder.feed(Array("\u{1b}[\(57409 + index)u".utf8)) == [.text(text)])
+    }
+    #expect(
+        decoder.feed(Array("\u{1b}[57414u\u{1b}[57415u\u{1b}[57416u".utf8)) == [
+            .keyEvent(KeyEvent(key: .enter)), .text("="), .text(","),
+        ])
+    let navigation: [Key] = [.left, .right, .up, .down, .pageUp, .pageDown, .home, .end, .insert, .delete]
+    for (index, key) in navigation.enumerated() {
+        #expect(decoder.feed(Array("\u{1b}[\(57417 + index)u".utf8)) == [.keyEvent(KeyEvent(key: key))])
+    }
+    let wire = Array("\u{1b}[57400:49;5:3;49u\u{1b}[1;2:2E\u{1b}[57427~".utf8)
+    for split in 0...wire.count {
+        var fragmented = InputDecoder()
+        let events = fragmented.feed(Array(wire.prefix(split))) + fragmented.feed(Array(wire.dropFirst(split)))
+        #expect(
+            events == [
+                .keyEvent(
+                    KeyEvent(
+                        key: .character("1"), modifiers: .control, kind: .release, text: "1",
+                        shiftedKey: .character("1"))),
+                .keyEvent(KeyEvent(key: .begin, modifiers: .shift, kind: .repeated)), .key(.begin),
+            ])
+    }
+}
+
+@Test func applicationKeypadSS3SequencesWorkByteByByte() {
+    var decoder = InputDecoder()
+    let source =
+        "\u{1b}Op\u{1b}Oq\u{1b}Or\u{1b}Os\u{1b}Ot\u{1b}Ou\u{1b}Ov\u{1b}Ow\u{1b}Ox\u{1b}Oy"
+        + "\u{1b}On\u{1b}Oo\u{1b}Oj\u{1b}Om\u{1b}Ok\u{1b}OM\u{1b}OX\u{1b}Ol\u{1b}OE"
+    var events: [InputEvent] = []
+    for byte in source.utf8 { events += decoder.feed([byte]) }
+    #expect(
+        events == (0...9).map { .text(String($0)) } + [
+            .text("."), .text("/"), .text("*"), .text("-"), .text("+"), .key(.enter),
+            .text("="), .text(","), .key(.begin),
+        ])
+}

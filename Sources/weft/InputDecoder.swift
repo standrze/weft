@@ -7,18 +7,31 @@ import Foundation
 public struct InputDecoder {
     private var pendingBytes: [UInt8] = []
     private var pasteBytes: [UInt8]?
-    private let pasteLimit = 1_048_576
+    private let pasteLimit: Int
+    private var pasteWasTruncated = false
     private var controlString: DiscardedControlString?
+    private let terminalReplies: Bool
+    private var discardingCSI = false
 
     private struct DiscardedControlString {
         var acceptsBell: Bool
         var previousWasEscape = false
+        var bytes: [UInt8] = []
+        var oversized = false
     }
 
-    public init() {}
+    /// Bounds retained UTF-8 paste bytes; bytes beyond the limit are consumed until the terminator.
+    ///
+    /// The default retains at most 1 MiB. Protocol-aware callers may choose a larger finite budget.
+    /// Oversized pastes produce `.pasteTruncated` with a prefix ending at a complete UTF-8 scalar.
+    /// Opt into recognized typed reports without turning unknown replies into text.
+    public init(maximumPasteBytes: Int = 1_048_576, terminalReplies: Bool = false) {
+        pasteLimit = max(0, maximumPasteBytes)
+        self.terminalReplies = terminalReplies
+    }
 
     internal var hasPendingEscape: Bool {
-        pasteBytes == nil && controlString == nil && pendingBytes == [27]
+        pasteBytes == nil && controlString == nil && !discardingCSI && pendingBytes == [27]
     }
 
     /// Treats a lone escape byte as a key after the caller's input timeout.
@@ -39,14 +52,28 @@ public struct InputDecoder {
         // Consume with an index, then compact once. Large pastes stay linear.
         while cursor < pendingBytes.count {
             let remainingCount = pendingBytes.count - cursor
+            if discardingCSI {
+                if (0x40...0x7e).contains(pendingBytes[cursor]) { discardingCSI = false }
+                cursor += 1
+                continue
+            }
 
             // Terminal replies are not keystrokes. Discard control-string payloads
             // incrementally so a fragmented or long response cannot become text.
             if var reply = controlString {
                 let byte = pendingBytes[cursor]
                 if (reply.acceptsBell && byte == 7) || (reply.previousWasEscape && byte == 92) {
+                    if reply.previousWasEscape && byte == 92 && reply.bytes.last == 27 { reply.bytes.removeLast() }
+                    if terminalReplies, reply.acceptsBell, !reply.oversized,
+                        let report = TerminalReplyDecoder.operatingSystemCommand(reply.bytes)
+                    {
+                        events.append(.terminalReply(report))
+                    }
                     controlString = nil
                 } else {
+                    if reply.acceptsBell && terminalReplies {
+                        if reply.bytes.count < 256 { reply.bytes.append(byte) } else { reply.oversized = true }
+                    }
                     reply.previousWasEscape = byte == 27
                     controlString = reply
                 }
@@ -57,8 +84,20 @@ public struct InputDecoder {
             if pasteBytes != nil {
                 let pasteTerminator: [UInt8] = [27, 91, 50, 48, 49, 126]
                 if pendingBytes[cursor...].starts(with: pasteTerminator) {
-                    events.append(.paste(String(decoding: pasteBytes!, as: UTF8.self)))
+                    var retained = pasteBytes!
+                    if pasteWasTruncated {
+                        // A byte budget may split the final UTF-8 scalar. Remove that
+                        // incomplete suffix rather than inventing a replacement character.
+                        if let start = retained.lastIndex(where: { $0 & 0xc0 != 0x80 }),
+                            utf8SequenceLength(startingWith: retained[start]) > retained.count - start
+                        {
+                            retained.removeSubrange(start...)
+                        }
+                    }
+                    let text = String(decoding: retained, as: UTF8.self)
+                    events.append(pasteWasTruncated ? .pasteTruncated(text) : .paste(text))
                     pasteBytes = nil
+                    pasteWasTruncated = false
                     cursor += pasteTerminator.count
                     continue
                 }
@@ -69,6 +108,8 @@ public struct InputDecoder {
                 }
                 if pasteBytes!.count < pasteLimit {
                     pasteBytes!.append(pendingBytes[cursor])
+                } else {
+                    pasteWasTruncated = true
                 }
                 cursor += 1
                 continue
@@ -94,15 +135,21 @@ public struct InputDecoder {
                     let sequenceRange = cursor + 2..<pendingBytes.count
                     guard let end = sequenceRange.first(where: { (0x40...0x7e).contains(pendingBytes[$0]) }) else {
                         if remainingCount > 128 {
+                            discardingCSI = true
                             cursor = pendingBytes.count
                         }
                         break
+                    }
+                    guard end - cursor <= 128 else {
+                        cursor = end + 1
+                        continue
                     }
                     let code = String(decoding: pendingBytes[cursor + 2...end], as: UTF8.self)
                     cursor = end + 1
 
                     if code == "200~" {
                         pasteBytes = []
+                        pasteWasTruncated = false
                         continue
                     }
                     if let event = decodeControlSequence(code) {
@@ -123,9 +170,20 @@ public struct InputDecoder {
                         80: .function(1), 81: .f2, 82: .function(3), 83: .function(4),
                         72: .home, 70: .end,
                         65: .up, 66: .down, 67: .right, 68: .left,
+                        69: .begin, 77: .enter,
+                        106: .character("*"), 107: .character("+"), 108: .character(","),
+                        109: .character("-"), 110: .character("."), 111: .character("/"),
+                        88: .character("="),
                     ]
-                    if let key = keys[code] {
-                        events.append(.key(key))
+                    let key =
+                        (112...121).contains(code)
+                        ? Key.character(String(code - 112)) : keys[code]
+                    if let key {
+                        if case let .character(text) = key {
+                            events.append(.text(text))
+                        } else {
+                            events.append(.key(key))
+                        }
                     }
                     continue
                 }
@@ -233,11 +291,17 @@ public struct InputDecoder {
     }
 
     private func decodeControlSequence(_ code: String) -> InputEvent? {
+        if terminalReplies, let report = TerminalReplyDecoder.controlSequence(code) {
+            return .terminalReply(report)
+        }
+        if code == "I" { return .focusChanged(true) }
+        if code == "O" { return .focusChanged(false) }
         let plainKeys: [String: Key] = [
             "A": .up, "B": .down, "C": .right, "D": .left,
             "H": .home, "F": .end, "1~": .home, "4~": .end,
             "3~": .delete, "5~": .pageUp, "6~": .pageDown,
             "12~": .f2, "P": .function(1), "Q": .f2, "S": .function(4),
+            "E": .begin, "1E": .begin,
         ]
         if let key = plainKeys[code] {
             return .key(key)
@@ -277,6 +341,7 @@ public struct InputDecoder {
         case "B": key = .down
         case "C": key = .right
         case "D": key = .left
+        case "E": key = .begin
         case "H": key = .home
         case "F": key = .end
         case "P": key = .function(1)
@@ -349,8 +414,28 @@ public struct InputDecoder {
         case 13: return .enter
         case 27: return .escape
         case 57376...57398: return .function(Int(value - 57376 + 13))
+        case 57399...57408: return .character(String(value - 57399))
+        case 57409: return .character(".")
+        case 57410: return .character("/")
+        case 57411: return .character("*")
+        case 57412: return .character("-")
+        case 57413: return .character("+")
+        case 57414: return .enter
+        case 57415: return .character("=")
+        case 57416: return .character(",")
+        case 57417: return .left
+        case 57418: return .right
+        case 57419: return .up
+        case 57420: return .down
+        case 57421: return .pageUp
+        case 57422: return .pageDown
+        case 57423: return .home
+        case 57424: return .end
+        case 57425: return .insert
+        case 57426: return .delete
+        case 57427: return .begin
         default:
-            // Other private-use functional keys (media, keypad, modifier keys)
+            // Other private-use functional keys (media and modifier keys)
             // are outside the current key vocabulary; never insert their glyphs.
             guard value >= 32, !(0x7f...0x9f).contains(value), !(57344...63743).contains(value),
                 let scalar = UnicodeScalar(value)
@@ -417,6 +502,7 @@ public struct InputDecoder {
         case 21: .function(10)
         case 23: .function(11)
         case 24: .function(12)
+        case 57427: .begin
         default: nil
         }
     }
@@ -425,26 +511,41 @@ public struct InputDecoder {
         guard code.first == "<", code.last == "M" || code.last == "m" else {
             return nil
         }
-        let parameters = code.dropFirst().dropLast().split(separator: ";").compactMap { Int($0) }
-        guard parameters.count == 3, parameters[1] > 0, parameters[2] > 0 else {
+        let fields = code.dropFirst().dropLast().split(separator: ";", omittingEmptySubsequences: false)
+        guard fields.count == 3, fields.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy({ (48...57).contains($0) }) }),
+            let encoded = Int(fields[0]), (0...255).contains(encoded),
+            let x = Int(fields[1]), x > 0, let y = Int(fields[2]), y > 0
+        else {
             return nil
         }
-
-        let button = parameters[0]
+        var modifiers: KeyModifiers = []
+        if encoded & 4 != 0 { modifiers.insert(.shift) }
+        if encoded & 8 != 0 { modifiers.insert(.alt) }
+        if encoded & 16 != 0 { modifiers.insert(.control) }
         let kind: MouseKind
-        if button & 64 != 0 {
-            kind = button & 1 == 0 ? .wheelUp : .wheelDown
-        } else if button & 32 != 0 && button & 3 == 3 && code.last == "M" {
+        var button: MouseButton?
+        if encoded & 64 != 0 {
+            guard encoded & (128 | 32) == 0, code.last == "M" else { return nil }
+            switch encoded & 3 {
+            case 0: kind = .wheelUp
+            case 1: kind = .wheelDown
+            case 2: kind = .wheelLeft
+            default: kind = .wheelRight
+            }
+        } else if encoded & 128 != 0 {
+            button = .additional(8 + (encoded & 3))
+            kind = code.last == "m" ? .up : encoded & 32 != 0 ? .drag : .down
+        } else if encoded & 32 != 0 && encoded & 3 == 3 && code.last == "M" {
             kind = .move
-        } else if button & 3 != 0 {
-            return nil
-        } else if code.last == "m" {
-            kind = .up
         } else {
-            kind = button & 32 != 0 ? .drag : .down
+            switch encoded & 3 {
+            case 0: button = .left
+            case 1: button = .middle
+            case 2: button = .right
+            default: return nil
+            }
+            kind = code.last == "m" ? .up : encoded & 32 != 0 ? .drag : .down
         }
-
-        let position = Point(x: parameters[1] - 1, y: parameters[2] - 1)
-        return .mouse(MouseEvent(kind: kind, position: position))
+        return .mouse(MouseEvent(kind: kind, position: Point(x: x - 1, y: y - 1), button: button, modifiers: modifiers))
     }
 }
