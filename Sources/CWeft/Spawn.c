@@ -1,3 +1,4 @@
+#if !defined(_WIN32)
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -8,3 +9,5 @@
 short weft_spawn_setsid_flag(void) {
     return POSIX_SPAWN_SETSID;
 }
+
+#endif

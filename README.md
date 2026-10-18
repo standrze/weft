@@ -17,7 +17,7 @@ or underneath [loom](https://github.com/standrze/loom).
 | Keyboard | Legacy keys and opt-in Kitty keyboard protocol support |
 | Events | Asynchronous input, resize, query results, and resume delivery through `TerminalEvents` |
 | Output | A small `Backend` protocol, ANSI output, terminal commands |
-| Geometry | Cell widths, points, rectangles, terminal capability detection |
+| Geometry | Locale-independent Unicode cell widths, points, rectangles, terminal capability detection |
 
 Rendering is optional. There is no dependency on loom or an application framework.
 
@@ -102,6 +102,11 @@ python3 scripts/smoke-job-control.py .build/debug/weft-demo
 See [CONTRIBUTING.md](CONTRIBUTING.md). Version `0.1.0` is an early extraction
 from ono-sendai; APIs may change before 1.0. Terminal behavior and character widths
 vary between emulators and fonts.
+
+## Platform details
+
+[Platform support](Documentation/PlatformSupport.md) documents native Windows console/ConPTY
+behavior, supported operations, Unicode width policy, and validation.
 
 ## License
 

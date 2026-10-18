@@ -3,7 +3,7 @@ import weft
 
 #if canImport(Darwin)
     import Darwin
-#else
+#elseif canImport(Glibc)
     import Glibc
 #endif
 
@@ -59,7 +59,9 @@ struct Demo {
                         continue
                     }
                     if keyboard.key == .character("z") {
-                        try session.suspendToShell()
+                        #if !os(Windows)
+                            try session.suspendToShell()
+                        #endif
                         continue
                     }
                 }
@@ -67,10 +69,12 @@ struct Demo {
                     return
                 }
                 if case let .signal(number) = event {
-                    if number == Int(SIGTSTP) {
-                        try session.suspendToShell()
-                        continue
-                    }
+                    #if !os(Windows)
+                        if number == Int(SIGTSTP) {
+                            try session.suspendToShell()
+                            continue
+                        }
+                    #endif
                     return
                 }
                 try output.write(Data("\(String(reflecting: event))\r\n".utf8))
@@ -80,10 +84,16 @@ struct Demo {
 
     private static func runHandoffExample() throws {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [
-            "-c", #"printf 'handoff-ready\n'; IFS= read -r line; printf 'handoff-input:%s\n' "$line""#,
-        ]
+        #if os(Windows)
+            let command = ProcessInfo.processInfo.environment["ComSpec"] ?? "C:/Windows/System32/cmd.exe"
+            process.executableURL = URL(fileURLWithPath: command)
+            process.arguments = ["/d", "/c", "echo handoff-ready & set /p WEFT_HANDOFF_LINE= & echo handoff-complete"]
+        #else
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = [
+                "-c", #"printf 'handoff-ready\n'; IFS= read -r line; printf 'handoff-input:%s\n' "$line""#,
+            ]
+        #endif
         process.standardInput = FileHandle.standardInput
         process.standardOutput = FileHandle.standardOutput
         process.standardError = FileHandle.standardError

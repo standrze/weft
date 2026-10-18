@@ -3,8 +3,10 @@ import Foundation
 
 #if canImport(Darwin)
     import Darwin
-#else
+#elseif canImport(Glibc)
     import Glibc
+#elseif os(Windows)
+    import CWeft
 #endif
 
 /// Delivers terminal input and resize events without an idle polling timer.
@@ -88,22 +90,36 @@ public final class TerminalEvents {
 
     private func beginObserving() {
         let currentGeneration = generation
-        sources = TerminalEventSources(
-            inputDescriptor: session.inputNotificationDescriptor,
-            signalDescriptor: session.signalNotificationDescriptor,
-            onReady: { [weak self] in
-                MainActor.assumeIsolated {
-                    guard self?.generation == currentGeneration else { return }
-                    self?.receiveAvailableEvents()
+        do {
+            sources = try TerminalEventSources(
+                usesNativeConsole: session.usesNativeConsoleReadiness,
+                inputDescriptor: session.inputNotificationDescriptor,
+                signalDescriptor: session.signalNotificationDescriptor,
+                onReady: { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard self?.generation == currentGeneration else { return }
+                        self?.receiveAvailableEvents()
+                    }
+                },
+                onFailure: { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.generation == currentGeneration else { return }
+                        self.continuation.finish(throwing: TerminalError.inputClosed)
+                        self.stop()
+                    }
+                },
+                onSignal: { [weak self] number in
+                    MainActor.assumeIsolated {
+                        guard self?.generation == currentGeneration else { return }
+                        self?.receiveSignal(number)
+                    }
                 }
-            },
-            onSignal: { [weak self] number in
-                MainActor.assumeIsolated {
-                    guard self?.generation == currentGeneration else { return }
-                    self?.receiveSignal(number)
-                }
-            }
-        )
+            )
+        } catch {
+            continuation.finish(throwing: error)
+            stop()
+            return
+        }
         receiveAvailableEvents()
     }
 
@@ -120,13 +136,15 @@ public final class TerminalEvents {
 
     private func receiveSignal(_ number: Int32) {
         guard !stopped && !paused else { return }
-        if number == SIGWINCH {
-            receiveAvailableEvents()
-        } else {
-            // Signal sources identify the event directly, independently of input.
-            // Poll also checks the recorded signal for synchronous clients.
-            yield([.signal(Int(number))])
-        }
+        #if !os(Windows)
+            if number == SIGWINCH {
+                receiveAvailableEvents()
+                return
+            }
+        #endif
+        // Signal sources identify the event directly, independently of input.
+        // Poll also checks the recorded signal for synchronous clients.
+        yield([.signal(Int(number))])
     }
 
     private func receiveAvailableEvents() {
@@ -153,47 +171,118 @@ public final class TerminalEvents {
     }
 }
 
-/// Dispatch observers are canceled when their owner is released, including error paths.
-private final class TerminalEventSources {
-    private let sources: [any DispatchSourceProtocol]
+#if !os(Windows)
+    /// Dispatch observers are canceled when their owner is released, including error paths.
+    private final class TerminalEventSources {
+        private let sources: [any DispatchSourceProtocol]
 
-    init(
-        inputDescriptor: Int32,
-        signalDescriptor: Int32,
-        onReady: @escaping @Sendable () -> Void,
-        onSignal: @escaping @Sendable (Int32) -> Void
-    ) {
-        var sources: [any DispatchSourceProtocol] = []
-        if inputDescriptor >= 0 {
-            let input = DispatchSource.makeReadSource(fileDescriptor: inputDescriptor, queue: .main)
-            input.setEventHandler(handler: onReady)
-            sources.append(input)
+        init(
+            usesNativeConsole: Bool,
+            inputDescriptor: Int32,
+            signalDescriptor: Int32,
+            onReady: @escaping @Sendable () -> Void,
+            onFailure: @escaping @Sendable () -> Void,
+            onSignal: @escaping @Sendable (Int32) -> Void
+        ) throws {
+            var sources: [any DispatchSourceProtocol] = []
+            if inputDescriptor >= 0 {
+                let input = DispatchSource.makeReadSource(fileDescriptor: inputDescriptor, queue: .main)
+                input.setEventHandler(handler: onReady)
+                sources.append(input)
+            }
+            #if canImport(Glibc)
+                // A self-pipe preserves POSIX handlers and permits reopening sessions.
+                // Linux Dispatch signal sources cache and replace those handlers.
+                if signalDescriptor >= 0 {
+                    let signal = DispatchSource.makeReadSource(fileDescriptor: signalDescriptor, queue: .main)
+                    signal.setEventHandler(handler: onReady)
+                    sources.append(signal)
+                }
+            #else
+                for number in inputDescriptor >= 0 ? Reed.handledSignals : [] {
+                    let signal = DispatchSource.makeSignalSource(signal: number, queue: .main)
+                    signal.setEventHandler { onSignal(number) }
+                    // Registration is asynchronous. A signal may reach Reed before its
+                    // Dispatch observer is installed, so consume any recorded signal then.
+                    signal.setRegistrationHandler(handler: onReady)
+                    sources.append(signal)
+                }
+            #endif
+            self.sources = sources
+            for source in sources { source.resume() }
         }
-        #if canImport(Glibc)
-            // A self-pipe preserves POSIX handlers and permits reopening sessions.
-            // Linux Dispatch signal sources cache and replace those handlers.
-            if signalDescriptor >= 0 {
-                let signal = DispatchSource.makeReadSource(fileDescriptor: signalDescriptor, queue: .main)
-                signal.setEventHandler(handler: onReady)
-                sources.append(signal)
-            }
-        #else
-            for number in inputDescriptor >= 0 ? Reed.handledSignals : [] {
-                let signal = DispatchSource.makeSignalSource(signal: number, queue: .main)
-                signal.setEventHandler { onSignal(number) }
-                // Registration is asynchronous. A signal may reach Reed before its
-                // Dispatch observer is installed, so consume any recorded signal then.
-                signal.setRegistrationHandler(handler: onReady)
-                sources.append(signal)
-            }
-        #endif
-        self.sources = sources
-        for source in sources { source.resume() }
+
+        func cancel() {
+            for source in sources { source.cancel() }
+        }
+
+        deinit { cancel() }
     }
 
-    func cancel() {
-        for source in sources { source.cancel() }
+#else
+    /// One blocking Win32 wait, followed by a main-queue acknowledgment before rearming.
+    ///
+    /// The waiting thread observes readiness only; the session remains the sole input reader.
+    private final class TerminalEventSources {
+        private let state: NativeConsoleWaiter?
+
+        init(
+            usesNativeConsole: Bool, inputDescriptor: Int32, signalDescriptor: Int32,
+            onReady: @escaping @Sendable () -> Void,
+            onFailure: @escaping @Sendable () -> Void,
+            onSignal: @escaping @Sendable (Int32) -> Void
+        ) throws {
+            guard usesNativeConsole else {
+                state = nil
+                return
+            }
+            guard let pointer = weft_console_waiter_create() else {
+                throw TerminalError.configurationFailed(operation: "create Windows console readiness", code: 0)
+            }
+            let state = NativeConsoleWaiter(pointer: pointer)
+            self.state = state
+            DispatchQueue.global(qos: .userInitiated).async {
+                while !state.isCancelled {
+                    let result = weft_console_waiter_wait(state.pointer)
+                    guard result != 0 else { return }
+                    DispatchQueue.main.async {
+                        if !state.isCancelled {
+                            if result > 0 { onReady() } else { onFailure() }
+                        }
+                        state.acknowledgment.signal()
+                    }
+                    state.acknowledgment.wait()
+                    if result < 0 { return }
+                }
+            }
+        }
+
+        func cancel() { state?.cancel() }
+        deinit { cancel() }
     }
 
-    deinit { cancel() }
-}
+    private final class NativeConsoleWaiter: @unchecked Sendable {
+        let pointer: UnsafeMutableRawPointer
+        let acknowledgment = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var cancelled = false
+
+        init(pointer: UnsafeMutableRawPointer) { self.pointer = pointer }
+
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            weft_console_waiter_cancel(pointer)
+            acknowledgment.signal()
+            lock.unlock()
+        }
+
+        deinit { weft_console_waiter_destroy(pointer) }
+    }
+#endif

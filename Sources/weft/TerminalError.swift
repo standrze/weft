@@ -9,7 +9,9 @@ public enum TerminalError: Error, Equatable {
     case invalidQuery
     case queryAlreadyPending
     case tooManyQueries
-    /// A POSIX operation failed; `code` is the captured errno value.
+    /// The platform does not supply the requested operation.
+    case unsupportedOperation(operation: String)
+    /// A native operation failed; `code` is the captured errno or Windows error code.
     case configurationFailed(operation: String, code: Int32)
     case inputClosed
     /// Decoded and byte input polling cannot share one session.
