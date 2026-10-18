@@ -24,5 +24,6 @@ int weft_console_test_mouse(int16_t x, int16_t y, uint32_t buttons, uint32_t fla
 int weft_console_test_resize(int16_t columns, int16_t rows);
 void weft_console_test_state(uint32_t *input, uint32_t *output, uint32_t *input_cp, uint32_t *output_cp);
 int weft_console_test_interrupt(void);
+int weft_console_test_break(void);
 #endif
 #endif

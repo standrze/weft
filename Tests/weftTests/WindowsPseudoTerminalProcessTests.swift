@@ -156,9 +156,17 @@
         )
         try waitForWindowsReady(child)
         Thread.sleep(forTimeInterval: 0.2)
+        let identifier = UInt32(bitPattern: child.processIdentifier)
         let started = Date()
         child.close()
         #expect(Date().timeIntervalSince(started) < 1)
+        // Verify asynchronous teardown actually kills the process, rather than merely
+        // returning promptly. Three seconds is shorter than this fixture's ten-second lifetime.
+        let probe = try spawnWindowsFixture(
+            "$deadline = [DateTime]::UtcNow.AddSeconds(3); do { if (-not (Get-Process -Id \(identifier) -ErrorAction SilentlyContinue)) { exit 0 }; Start-Sleep -Milliseconds 50 } while ([DateTime]::UtcNow -lt $deadline); exit 9"
+        )
+        defer { probe.close() }
+        #expect(try drainWindowsFixture(probe, timeout: 10).1 == 0)
     }
     @Test func windowsConPTYCancellationKillsGrandchildrenInOwnedJob() throws {
         let child = try spawnWindowsFixture(

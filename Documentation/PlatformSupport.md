@@ -20,7 +20,7 @@ layout accepts a custom measure function. CI runs C and C.UTF-8 test processes.
 
 Entry saves input/output modes and code pages, enables raw console input and VT
 output, and restores settings after failure, handoff, or close. `ReadConsoleInputW`
-is the only reader. Native key records (including surrogate pairs/modifiers),
+is the only reader. Native key records (including surrogate pairs/modifiers and raw Ctrl-C),
 mouse and focus records become UTF-8/VT for the existing decoder; viewport size
 supplies resize events. Cancellable native waits and main-queue acknowledgments
 provide asynchronous readiness without an idle polling timer or second reader.
@@ -71,5 +71,7 @@ Windows tests cover private-console restoration, Unicode/key input, resize,
 async readiness, interrupts, and ConPTY input/output, literal arguments/env,
 exit status, final-output draining, and process-tree cleanup.
 `scripts/smoke-windows.ps1` runs console tests in a separate process allocating
-its own private console. Hosted Windows results are required before claiming
-verified support. A workflow configuration alone is not a passing result.
+its own private console. The Windows job separately runs the general/ConPTY suite and this opt-in console
+suite, so skipped console tests in the first process cannot stand in for native
+session validation. See the [platform workflow](https://github.com/standrze/weft/actions/workflows/ci.yml)
+for results on each exact candidate revision.

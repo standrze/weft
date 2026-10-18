@@ -60,6 +60,9 @@
             #expect(try poll(session, until: .text("界")))
             #expect(weft_console_test_key(0, 0x26, 0) != 0)  // VK_UP.
             #expect(try poll(session, until: .key(.up)))
+            // Physical Ctrl-C in raw mode is byte input, independently of generated control events.
+            #expect(weft_console_test_key(3, 0x43, 0x0008) != 0)  // VK_C + LEFT_CTRL_PRESSED.
+            #expect(try poll(session, until: .key(.interrupt)))
             #expect(weft_console_test_key(0xd83d, 0, 0) != 0)
             #expect(weft_console_test_key(0xde00, 0, 0) != 0)
             #expect(try poll(session, until: .text("😀")))
@@ -103,6 +106,13 @@
             #expect(weft_console_test_interrupt() != 0)
             #expect(try poll(asynchronousSession, until: .signal(2)))
             asynchronousSession.close()
+            #expect(consoleState() == original)
+
+            let breakSession = try TerminalSession(options: options)
+            defer { breakSession.close() }
+            #expect(weft_console_test_break() != 0)
+            #expect(try poll(breakSession, until: .signal(15)))
+            breakSession.close()
             #expect(consoleState() == original)
         }
 

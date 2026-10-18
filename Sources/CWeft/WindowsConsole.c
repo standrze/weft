@@ -377,6 +377,14 @@ uint32_t weft_console_test_private(void) {
     fixture_allocated_input = GetStdHandle(STD_INPUT_HANDLE);
     fixture_allocated_output = GetStdHandle(STD_OUTPUT_HANDLE);
     fixture_allocated_error = GetStdHandle(STD_ERROR_HANDLE);
+    /* Test runners may inherit the process-local ignore-Ctrl-C attribute, independently
+       of the handler table reset by AllocConsole. Own this fixture's control policy
+       explicitly so GenerateConsoleCtrlEvent exercises the installed handler. */
+    if (!SetConsoleCtrlHandler(NULL, FALSE)) {
+        DWORD error = GetLastError();
+        weft_console_test_private_end();
+        return error;
+    }
     fixture_input = CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL, OPEN_EXISTING, 0, NULL);
     fixture_output = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -433,4 +441,5 @@ void weft_console_test_state(uint32_t *input, uint32_t *output, uint32_t *input_
     *input_cp = GetConsoleCP(); *output_cp = GetConsoleOutputCP();
 }
 int weft_console_test_interrupt(void) { return GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0); }
+int weft_console_test_break(void) { return GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0); }
 #endif
