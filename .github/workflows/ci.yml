@@ -82,11 +82,18 @@ jobs:
           $version = swift --version | Out-String
           Write-Output $version
           if ($LASTEXITCODE -ne 0 -or $version -notmatch 'Swift version 6\.4\.1\b') { throw 'Swift 6.4.1 is required' }
-      - name: Test and build (sequential)
+      - name: Build tests and demo (sequential)
+        timeout-minutes: 15
         run: |
-          swift test
+          swift build --build-tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           swift build --product weft-demo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows unit and ConPTY tests
+        timeout-minutes: 5
+        run: |
+          swift test --skip-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Windows private-console native smoke
+        timeout-minutes: 5
         run: ./scripts/smoke-windows.ps1

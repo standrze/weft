@@ -10,10 +10,10 @@ static HANDLE console_input, console_output, console_signal_event, console_bytes
 static DWORD saved_input_mode, saved_output_mode, saved_input_cp, saved_output_cp;
 static LONG console_active, console_signal;
 static WCHAR pending_surrogate;
-static unsigned char pending_bytes[128];
+static unsigned char pending_bytes[512];
 static size_t pending_count, pending_offset;
 static WORD pending_repeats;
-static unsigned char repeated_bytes[128];
+static unsigned char repeated_bytes[512];
 static size_t repeated_count;
 static DWORD previous_buttons;
 static int mouse_clicks, mouse_drags, mouse_motion, focus_reports;
@@ -219,25 +219,9 @@ repeat:
     }
 }
 
-static void encode_mouse(const MOUSE_EVENT_RECORD *mouse) {
-    if (!(mouse_clicks || mouse_drags || mouse_motion)) { previous_buttons = mouse->dwButtonState; return; }
-    DWORD buttons = mouse->dwButtonState & 0xffff;
-    int code = 3;
-    if (buttons & FROM_LEFT_1ST_BUTTON_PRESSED) code = 0;
-    else if (buttons & FROM_LEFT_2ND_BUTTON_PRESSED) code = 1;
-    else if (buttons & RIGHTMOST_BUTTON_PRESSED) code = 2;
-    char final = 'M';
-    if (mouse->dwEventFlags & MOUSE_WHEELED) code = (SHORT)HIWORD(mouse->dwButtonState) > 0 ? 64 : 65;
-    else if (mouse->dwEventFlags & MOUSE_HWHEELED) code = (SHORT)HIWORD(mouse->dwButtonState) > 0 ? 67 : 66;
-    else if (mouse->dwEventFlags & MOUSE_MOVED) {
-        if (!mouse_motion && (!mouse_drags || !buttons)) { previous_buttons = buttons; return; }
-        code += 32;
-    } else if (!buttons && previous_buttons) {
-        code = (previous_buttons & FROM_LEFT_1ST_BUTTON_PRESSED) ? 0
-            : (previous_buttons & FROM_LEFT_2ND_BUTTON_PRESSED) ? 1 : 2;
-        final = 'm';
-    }
-    previous_buttons = buttons;
+/* A native record contains the full button mask, not one changed button. Queue every
+   transition so releasing one button cannot leave an application stuck dragging it. */
+static void append_mouse(int code, char final, const MOUSE_EVENT_RECORD *mouse) {
     if (mouse->dwControlKeyState & SHIFT_PRESSED) code += 4;
     if (mouse->dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) code += 8;
     if (mouse->dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) code += 16;
@@ -245,9 +229,40 @@ static void encode_mouse(const MOUSE_EVENT_RECORD *mouse) {
     int left = 0, top = 0;
     if (GetConsoleScreenBufferInfo(console_output, &info)) { left = info.srWindow.Left; top = info.srWindow.Top; }
     char sequence[64];
-    snprintf(sequence, sizeof(sequence), "\033[<%d;%d;%d%c", code,
+    int count = snprintf(sequence, sizeof(sequence), "\033[<%d;%d;%d%c", code,
         (int)mouse->dwMousePosition.X - left + 1, (int)mouse->dwMousePosition.Y - top + 1, final);
-    set_pending(sequence);
+    if (count > 0 && (size_t)count < sizeof(sequence) && (size_t)count <= sizeof(pending_bytes) - pending_count) {
+        memcpy(pending_bytes + pending_count, sequence, (size_t)count);
+        pending_count += (size_t)count;
+        SetEvent(console_bytes_event);
+    }
+}
+
+static void encode_mouse(const MOUSE_EVENT_RECORD *mouse) {
+    DWORD buttons = mouse->dwButtonState & 0xffff;
+    DWORD previous = previous_buttons;
+    previous_buttons = buttons;
+    if (!(mouse_clicks || mouse_drags || mouse_motion)) return;
+    const DWORD masks[] = {FROM_LEFT_1ST_BUTTON_PRESSED, FROM_LEFT_2ND_BUTTON_PRESSED,
+        RIGHTMOST_BUTTON_PRESSED, FROM_LEFT_3RD_BUTTON_PRESSED, FROM_LEFT_4TH_BUTTON_PRESSED};
+    const int codes[] = {0, 1, 2, 128, 129};
+    /* Releases precede presses when one record changes multiple buttons. */
+    for (size_t index = 0; index < sizeof(masks) / sizeof(masks[0]); ++index)
+        if ((previous & masks[index]) && !(buttons & masks[index])) append_mouse(codes[index], 'm', mouse);
+    for (size_t index = 0; index < sizeof(masks) / sizeof(masks[0]); ++index)
+        if (!(previous & masks[index]) && (buttons & masks[index])) append_mouse(codes[index], 'M', mouse);
+    if (mouse->dwEventFlags & MOUSE_WHEELED) {
+        append_mouse((SHORT)HIWORD(mouse->dwButtonState) > 0 ? 64 : 65, 'M', mouse);
+    } else if (mouse->dwEventFlags & MOUSE_HWHEELED) {
+        append_mouse((SHORT)HIWORD(mouse->dwButtonState) > 0 ? 67 : 66, 'M', mouse);
+    } else if (mouse->dwEventFlags & MOUSE_MOVED) {
+        if (!mouse_motion && (!mouse_drags || !buttons)) return;
+        int code = 3;
+        for (size_t index = 0; index < sizeof(masks) / sizeof(masks[0]); ++index) {
+            if (buttons & masks[index]) { code = codes[index]; break; }
+        }
+        append_mouse(code + 32, 'M', mouse);
+    }
 }
 
 int weft_console_read(uint8_t *bytes, size_t capacity, int32_t timeout_ms) {
@@ -387,6 +402,15 @@ int weft_console_test_key(uint16_t character, uint16_t virtual_key, uint32_t mod
     record.Event.KeyEvent.wVirtualKeyCode = virtual_key;
     record.Event.KeyEvent.uChar.UnicodeChar = character;
     record.Event.KeyEvent.dwControlKeyState = modifiers;
+    return WriteConsoleInputW(GetStdHandle(STD_INPUT_HANDLE), &record, 1, &written) && written == 1;
+}
+int weft_console_test_mouse(int16_t x, int16_t y, uint32_t buttons, uint32_t flags, uint32_t modifiers) {
+    INPUT_RECORD record = {0}; DWORD written;
+    record.EventType = MOUSE_EVENT;
+    record.Event.MouseEvent.dwMousePosition = (COORD){x, y};
+    record.Event.MouseEvent.dwButtonState = buttons;
+    record.Event.MouseEvent.dwEventFlags = flags;
+    record.Event.MouseEvent.dwControlKeyState = modifiers;
     return WriteConsoleInputW(GetStdHandle(STD_INPUT_HANDLE), &record, 1, &written) && written == 1;
 }
 int weft_console_test_resize(int16_t columns, int16_t rows) {

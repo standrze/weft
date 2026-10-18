@@ -106,6 +106,60 @@
             #expect(consoleState() == original)
         }
 
+        @Test(.enabled(if: ProcessInfo.processInfo.environment["WEFT_WINDOWS_CONSOLE_TEST"] == "1"))
+        @MainActor
+        func mouseRecordsPreserveIndependentButtonTransitions() throws {
+            try #require(weft_console_test_private() == 0)
+            defer { weft_console_test_private_end() }
+            var options = TerminalOptions()
+            options.hideCursor = false
+            options.mouseCapture = true
+            let session = try TerminalSession(options: options)
+            defer { session.close() }
+            // Native masks: left=1, right=2, middle=4. Each record carries the entire held mask.
+            let states: [(UInt32, MouseKind, MouseButton)] = [
+                (1, .down, .left), (3, .down, .right), (2, .up, .left), (0, .up, .right),
+            ]
+            for (buttons, kind, button) in states {
+                #expect(weft_console_test_mouse(2, 3, buttons, 0, 0) != 0)
+                let expected = InputEvent.mouse(MouseEvent(kind: kind, position: Point(x: 2, y: 3), button: button))
+                #expect(try mouseEvents(session, count: 1) == [expected])
+            }
+            // One native record may change every button at once, and must preserve all reports.
+            #expect(weft_console_test_mouse(2, 3, 31, 0, 0x0010) != 0)  // SHIFT_PRESSED.
+            let buttons: [MouseButton] = [.left, .middle, .right, .additional(8), .additional(9)]
+            let expectedDown = buttons.map {
+                InputEvent.mouse(MouseEvent(kind: .down, position: Point(x: 2, y: 3), button: $0, modifiers: .shift))
+            }
+            #expect(try mouseEvents(session, count: 5) == expectedDown)
+            #expect(weft_console_test_mouse(2, 3, 0, 0, 0) != 0)
+            let expectedUp = buttons.map {
+                InputEvent.mouse(MouseEvent(kind: .up, position: Point(x: 2, y: 3), button: $0))
+            }
+            #expect(try mouseEvents(session, count: 5) == expectedUp)
+            // Replace left with right in one record: release must precede the new press.
+            #expect(weft_console_test_mouse(2, 3, 1, 0, 0) != 0)
+            _ = try mouseEvents(session, count: 1)
+            #expect(weft_console_test_mouse(2, 3, 2, 0, 0) != 0)
+            #expect(
+                try mouseEvents(session, count: 2) == [
+                    .mouse(MouseEvent(kind: .up, position: Point(x: 2, y: 3), button: .left)),
+                    .mouse(MouseEvent(kind: .down, position: Point(x: 2, y: 3), button: .right)),
+                ])
+        }
+
+        private func mouseEvents(_ session: TerminalSession, count: Int) throws -> [InputEvent] {
+            var events: [InputEvent] = []
+            for _ in 0..<32 {
+                events += try session.poll(timeoutMilliseconds: 100).filter {
+                    if case .mouse = $0 { return true }
+                    return false
+                }
+                if events.count >= count { break }
+            }
+            return events
+        }
+
         private func poll(_ session: TerminalSession, until expected: InputEvent) throws -> Bool {
             for _ in 0..<32 {
                 if try session.poll(timeoutMilliseconds: 100).contains(expected) { return true }
