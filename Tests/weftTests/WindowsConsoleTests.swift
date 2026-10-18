@@ -32,6 +32,30 @@
             #expect(configured[2] == 65001)
             #expect(configured[3] == 65001)
 
+            let handoffValue = try session.withSuspendedTerminal {
+                #expect(consoleState() == original)
+                #expect(session.isSuspended)
+                return 42
+            }
+            #expect(handoffValue == 42)
+            #expect(!session.isSuspended)
+            #expect(consoleState() == configured)
+            #expect(weft_console_test_key(0x68, 0, 0) != 0)
+            #expect(try poll(session, until: .text("h")))
+
+            enum HandoffFailure: Error, Equatable { case expected }
+            #expect(throws: HandoffFailure.expected) {
+                try session.withSuspendedTerminal {
+                    #expect(consoleState() == original)
+                    #expect(session.isSuspended)
+                    throw HandoffFailure.expected
+                }
+            }
+            #expect(!session.isSuspended)
+            #expect(consoleState() == configured)
+            #expect(weft_console_test_key(0x72, 0, 0) != 0)
+            #expect(try poll(session, until: .text("r")))
+
             #expect(weft_console_test_key(0x754c, 0, 0) != 0)
             #expect(try poll(session, until: .text("界")))
             #expect(weft_console_test_key(0, 0x26, 0) != 0)  // VK_UP.
