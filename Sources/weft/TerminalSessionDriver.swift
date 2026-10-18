@@ -2,7 +2,7 @@ import Foundation
 
 #if canImport(Darwin)
     import Darwin
-#else
+#elseif canImport(Glibc)
     import Glibc
 #endif
 
@@ -16,12 +16,21 @@ internal protocol TerminalSessionDriver {
     var signalNumber: Int32 { get }
     var signalNotificationDescriptor: Int32 { get }
     var inputDescriptor: Int32 { get }
+    /// Native Windows readiness is only used by the system driver, never fake drivers.
+    var usesNativeConsoleReadiness: Bool { get }
     func drainSignalNotifications()
 }
 
 extension TerminalSessionDriver {
     var signalNotificationDescriptor: Int32 { -1 }
-    var inputDescriptor: Int32 { STDIN_FILENO }
+    var inputDescriptor: Int32 {
+        #if os(Windows)
+            -1
+        #else
+            STDIN_FILENO
+        #endif
+    }
+    var usesNativeConsoleReadiness: Bool { false }
     func drainSignalNotifications() {}
 }
 
@@ -37,6 +46,13 @@ internal struct SystemTerminalSessionDriver: TerminalSessionDriver {
         Reed.read(&bytes, timeoutMilliseconds: timeoutMilliseconds)
     }
 
+    var usesNativeConsoleReadiness: Bool {
+        #if os(Windows)
+            true
+        #else
+            false
+        #endif
+    }
     var size: Rect { Reed.size() }
     var signalNumber: Int32 { Reed.signalNumber }
     var signalNotificationDescriptor: Int32 { Reed.signalNotificationDescriptor }

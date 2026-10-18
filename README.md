@@ -17,22 +17,27 @@ or underneath [loom](https://github.com/standrze/loom).
 | Keyboard | Legacy keys and opt-in Kitty keyboard protocol support |
 | Events | Asynchronous input, resize, query results, and resume delivery through `TerminalEvents` |
 | Output | A small `Backend` protocol, ANSI output, terminal commands |
-| Geometry | Cell widths, points, rectangles, terminal capability detection |
+| Geometry | Locale-independent Unicode cell widths, points, rectangles, terminal capability detection |
 
 Rendering is optional. There is no dependency on loom or an application framework.
 
 ## Add it with SwiftPM
 
-Requires **Swift 6.4+**. The package declares **macOS 13+** and includes Linux
-terminal code. Version `0.2.0` adds PTY processes, terminal handoff, query routing and shell job
-control. Release validation on macOS includes tests and PTY smoke checks; Linux
-validation runs in CI. This release uses `requestQuery(.cursorPosition)` and
-`InputEvent.queryResult` in place of the cursor-specific API from `0.1.2`.
+Requires **Swift 6.4+**. The package supports **macOS 13+**, Linux, and native
+Windows consoles and ConPTY (Windows 10 1809+/Server 2019+). CI installs Swift
+6.4.1 explicitly and checks macOS, Linux in both C and C.UTF-8 locales, and Windows.
+See [platform support](Documentation/PlatformSupport.md) for native console and
+process validation and the operations that Windows cannot represent.
+
+Version `0.2.0` added PTY processes, terminal handoff, query routing and shell job
+control. Version `0.2.1` adds deterministic Unicode widths and native Windows
+sessions/PTYs. Use `requestQuery(.cursorPosition)` and `InputEvent.queryResult`
+in place of the cursor-specific API from `0.1.2`.
 
 Add the package dependency:
 
 ```swift
-.package(url: "https://github.com/standrze/weft.git", from: "0.2.0")
+.package(url: "https://github.com/standrze/weft.git", from: "0.2.1")
 ```
 
 Then add its product to your target's dependencies:
@@ -102,6 +107,11 @@ python3 scripts/smoke-job-control.py .build/debug/weft-demo
 See [CONTRIBUTING.md](CONTRIBUTING.md). Version `0.1.0` is an early extraction
 from ono-sendai; APIs may change before 1.0. Terminal behavior and character widths
 vary between emulators and fonts.
+
+## Platform details
+
+[Platform support](Documentation/PlatformSupport.md) documents native Windows console/ConPTY
+behavior, supported operations, Unicode width policy, and validation.
 
 ## License
 

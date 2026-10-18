@@ -602,3 +602,16 @@ func sessionInputModeCannotLoseBytesBySwitchingDecoders(bytesFirst: Bool) throws
         ])
     #expect(driver.lastTimeout == 0)
 }
+
+#if os(Windows)
+    @Test func windowsShellSuspensionFailsWithoutReleasingOwnership() throws {
+        let driver = SessionDriver()
+        let session = try TerminalSession(options: TerminalOptions(), driver: driver)
+        defer { session.close() }
+        #expect(throws: TerminalError.unsupportedOperation(operation: "POSIX shell job control")) {
+            try session.suspendToShell()
+        }
+        #expect(!session.isSuspended)
+        #expect(try session.poll(timeoutMilliseconds: 0).isEmpty)
+    }
+#endif

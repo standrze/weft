@@ -57,7 +57,7 @@ public final class TerminalSession {
             try driver.write(Data(options.enterSequence.utf8))
         } catch {
             // Output may have failed after writing only part of the entry sequence.
-            // Attempt the inverse sequence before restoring POSIX terminal settings.
+            // Attempt the inverse sequence before restoring native terminal settings.
             close()
             throw error
         }
@@ -70,6 +70,7 @@ public final class TerminalSession {
         let elapsed = max(0, (clock() - lastInputTime) * 1000)
         return Int(max(0, Double(delay) - elapsed).rounded(.up))
     }
+    internal var usesNativeConsoleReadiness: Bool { driver.usesNativeConsoleReadiness }
     internal var signalNotificationDescriptor: Int32 { driver.signalNotificationDescriptor }
     internal var inputNotificationDescriptor: Int32 { driver.inputDescriptor }
     internal var nextEventTimeoutMilliseconds: Int? {
@@ -115,7 +116,7 @@ public final class TerminalSession {
     /// Safe to repeat.
     /// Input sources pause automatically. Pending queries are cancelled, and partial
     /// input is discarded at this ownership boundary. Even if ANSI output fails,
-    /// POSIX settings are restored and the session remains suspended.
+    /// Native settings are restored and the session remains suspended.
     public func suspend() throws {
         guard !closed else { throw TerminalError.sessionClosed }
         guard !isSuspended else { return }
@@ -189,8 +190,14 @@ public final class TerminalSession {
     ///
     /// Applications choose when to call this, such as for Ctrl-Z or a SIGTSTP event.
     /// Actual suspension depends on shell job control and the prior SIGTSTP disposition.
+    /// Windows throws `unsupportedOperation` without releasing terminal ownership;
+    /// use `withSuspendedTerminal` for editor/pager handoff on that platform.
     public func suspendToShell() throws {
-        try withSuspendedTerminal { try Reed.stopForShell() }
+        #if os(Windows)
+            throw TerminalError.unsupportedOperation(operation: "POSIX shell job control")
+        #else
+            try withSuspendedTerminal { try Reed.stopForShell() }
+        #endif
     }
 
     /// Sends a bounded query and delivers its result through `poll` or `TerminalEvents`.
@@ -284,7 +291,10 @@ public final class TerminalSession {
     /// Receives undecoded input for a terminal relay, plus resize and termination events.
     ///
     /// Zero polls without blocking; -1 waits indefinitely. Escape, paste, UTF-8 and
-    /// extended keyboard bytes retain their original encoding and chunk boundaries.
+    /// extended keyboard bytes retain their original encoding and chunk boundaries on POSIX.
+    /// Windows console input is normalized from native key/mouse records into UTF-8
+    /// and VT sequences; it is not an original byte transport. Child ConPTY output
+    /// remains a separate unmodified byte stream.
     /// A session chooses bytes or decoded input on its first poll and cannot mix them.
     /// With `readInput` false, poll only resize/termination without consuming stdin
     /// or waiting. This lets a relay respect child backpressure with bounded buffers.
