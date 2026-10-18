@@ -149,6 +149,15 @@ weft_windows_pty *weft_windows_pty_spawn(const uint16_t *executable, uint16_t *c
     HRESULT result = CreatePseudoConsole((COORD){columns, rows}, inputRead, outputWrite, 0, &pty->console);
     if (FAILED(result)) { SetLastError((DWORD)result); goto failed; }
     startup.StartupInfo.cb = sizeof(startup);
+    /* A console child can receive DUPLICATED redirected parent standard handles even
+       with bInheritHandles=FALSE. Explicit NULL slots suppress that legacy fallback;
+       the pseudoconsole connection supplies fresh console handles during startup.
+       Microsoft console-team guidance: terminal/discussions/15814. Never mutate the
+       parent's process-global standard handles to work around this behavior. */
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = NULL;
+    startup.StartupInfo.hStdOutput = NULL;
+    startup.StartupInfo.hStdError = NULL;
     InitializeProcThreadAttributeList(NULL, 1, 0, &attributeSize);
     startup.lpAttributeList = malloc(attributeSize);
     if (!startup.lpAttributeList) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); goto failed; }

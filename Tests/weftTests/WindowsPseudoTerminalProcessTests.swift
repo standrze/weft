@@ -55,6 +55,19 @@
         #expect(status == 7)
     }
 
+    @Test func windowsConPTYConnectsAllStandardHandlesToItsConsole() throws {
+        // `swift test` in CI has redirected reporter pipes. The child must receive new
+        // console handles instead of duplicated copies of those parent pipes.
+        let child = try spawnWindowsFixture(
+            "[Console]::WriteLine('CONPTY-HANDLES:' + [Console]::IsInputRedirected + ':' + [Console]::IsOutputRedirected + ':' + [Console]::IsErrorRedirected); [Console]::Error.WriteLine('CONPTY-STDERR'); exit 0"
+        )
+        defer { child.close() }
+        let (output, status) = try drainWindowsFixture(child)
+        #expect(output.contains("CONPTY-HANDLES:False:False:False"))
+        #expect(output.contains("CONPTY-STDERR"))
+        #expect(status == 0)
+    }
+
     @Test func windowsConPTYAcceptsInputAndResizes() throws {
         let child = try spawnWindowsFixture(
             "$s = [Console]::ReadLine(); [Console]::WriteLine('RECEIVED:' + $s); exit 0")
@@ -139,7 +152,8 @@
 
     @Test func windowsConPTYCloseIsNonblockingWithBackpressuredOutput() throws {
         let child = try spawnWindowsFixture(
-            "[Console]::WriteLine('WEFT-READY'); while ($true) { [Console]::WriteLine(('Y' * 1000)) }")
+            "[Console]::WriteLine('WEFT-READY'); $deadline = [DateTime]::UtcNow.AddSeconds(10); while ([DateTime]::UtcNow -lt $deadline) { [Console]::WriteLine(('Y' * 1000)) }"
+        )
         try waitForWindowsReady(child)
         Thread.sleep(forTimeInterval: 0.2)
         let started = Date()
