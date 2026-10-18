@@ -158,12 +158,13 @@
         Thread.sleep(forTimeInterval: 0.2)
         let identifier = UInt32(bitPattern: child.processIdentifier)
         let started = Date()
+        let cleanupDeadline = Int64(started.addingTimeInterval(3).timeIntervalSince1970 * 1000)
         child.close()
         #expect(Date().timeIntervalSince(started) < 1)
         // Verify asynchronous teardown actually kills the process, rather than merely
         // returning promptly. Three seconds is shorter than this fixture's ten-second lifetime.
         let probe = try spawnWindowsFixture(
-            "$deadline = [DateTime]::UtcNow.AddSeconds(3); do { if (-not (Get-Process -Id \(identifier) -ErrorAction SilentlyContinue)) { exit 0 }; Start-Sleep -Milliseconds 50 } while ([DateTime]::UtcNow -lt $deadline); exit 9"
+            "$deadline = [DateTimeOffset]::FromUnixTimeMilliseconds(\(cleanupDeadline)).UtcDateTime; while ([DateTime]::UtcNow -lt $deadline) { if (-not (Get-Process -Id \(identifier) -ErrorAction SilentlyContinue)) { exit 0 }; Start-Sleep -Milliseconds 50 }; exit 9"
         )
         defer { probe.close() }
         #expect(try drainWindowsFixture(probe, timeout: 10).1 == 0)
